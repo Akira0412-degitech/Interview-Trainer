@@ -6,6 +6,8 @@ import { usePathname } from "next/navigation";
 const PAGES = [
   { label: "Interview", href: "/interview" },
   { label: "Session Setup", href: "/session" },
+  { label: "Login", href: "/login" },
+  { label: "Sign Up", href: "/signup" },
 ];
 
 export default function DevNav() {
