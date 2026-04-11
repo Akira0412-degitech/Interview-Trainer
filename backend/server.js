@@ -20,7 +20,10 @@ app.use(sessionMiddleware);
 
 // CORS for local Next.js dev
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
+  const origin = req.headers.origin;
+  if (origin && origin.startsWith("http://localhost:")) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.sendStatus(200);
@@ -220,7 +223,7 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 server.listen(5000, () => {
-  console.log("Server is running on port 3000");
+  console.log("Server is running on port 5000");
 });
 
 app.listen(8080, () => {
