@@ -15,6 +15,26 @@ services:
       - app-network
     restart: unless-stopped
 
+  # ── MySQL Database ──────────────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    ports:
+      - "3307:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=1234
+      - MYSQL_DATABASE=interview_trainer
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p1234"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   # ── Backend (Express + WebSocket) ───────────────────────────────────────
   backend:
     build:
@@ -26,8 +46,16 @@ services:
     environment:
       - NODE_ENV=production
       - SANDBOX_URL=http://sandbox:8888
+      - DATABASE_URL=mysql://root:1234@mysql:3306/interview_trainer
+      - DATABASE_HOST=mysql
+      - DATABASE_USER=root
+      - DATABASE_PASSWORD=1234
+      - DATABASE_NAME=interview_trainer
+      - DATABASE_PORT=3306
     depends_on:
       sandbox:
+        condition: service_healthy
+      mysql:
         condition: service_healthy
     networks:
       - app-network
@@ -72,3 +100,6 @@ networks:
   sandbox-network:
     driver: bridge
     internal: true
+
+volumes:
+  mysql-data:
