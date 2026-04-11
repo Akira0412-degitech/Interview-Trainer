@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import dynamic from "next/dynamic";
+import { VoiceAgent } from "../components/VoiceAgent";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 
@@ -384,6 +385,7 @@ export default function Home() {
           </div>
         </div>
       </div>
+      <VoiceAgent />
     </div>
   );
 }

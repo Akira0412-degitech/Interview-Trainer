@@ -1,25 +1,24 @@
 "use client";
 
-import { useRef, useState } from "react";
-
-interface VoiceAgentProps {
-  problemTitle: string;
-  problemDescription: string;
-  code: string;
-  language: string;
-}
+import { useRef, useState, useEffect } from "react";
+import AICam from "./AICam";
 
 type VoiceStatus = "idle" | "connecting" | "connected" | "error";
-
-
 
 export function VoiceAgent() {
   const [status, setStatus] = useState<VoiceStatus>("idle");
   const [agentSpeaking, setAgentSpeaking] = useState(false);
+  const [aiStream, setAiStream] = useState<MediaStream | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
+
+  // Auto-connect when mounted on the interview page
+  useEffect(() => {
+    connect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const cleanup = () => {
     dcRef.current?.close();
@@ -32,6 +31,7 @@ export function VoiceAgent() {
       audioRef.current.srcObject = null;
     }
     setAgentSpeaking(false);
+    setAiStream(null);
   };
 
   const connect = async () => {
@@ -57,6 +57,7 @@ export function VoiceAgent() {
       audioRef.current = audioEl;
       pc.ontrack = (e) => {
         audioEl.srcObject = e.streams[0];
+        setAiStream(e.streams[0]);
       };
 
       // 4. Capture mic input
@@ -120,22 +121,9 @@ export function VoiceAgent() {
     setStatus("idle");
   };
 
-  if (status === "idle") {
+  if (status === "idle" || status === "connecting") {
     return (
-      <button
-        onClick={connect}
-        title="Talk to AI mentor"
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-zinc-700 hover:bg-zinc-600 transition-colors text-zinc-200"
-      >
-        <MicIcon className="w-3.5 h-3.5" />
-        Ask AI
-      </button>
-    );
-  }
-
-  if (status === "connecting") {
-    return (
-      <div className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs text-zinc-400 bg-zinc-800">
+      <div className="fixed bottom-6 right-20 z-40 flex items-center gap-1.5 px-3 py-1.5 rounded text-xs text-zinc-400 bg-zinc-800 shadow-lg">
         <span className="inline-block w-3 h-3 border-2 border-zinc-500 border-t-transparent rounded-full animate-spin" />
         Connecting…
       </div>
@@ -144,7 +132,7 @@ export function VoiceAgent() {
 
   if (status === "error") {
     return (
-      <div className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs text-red-400 bg-zinc-800">
+      <div className="fixed bottom-6 right-20 z-40 flex items-center gap-1.5 px-3 py-1.5 rounded text-xs text-red-400 bg-zinc-800 shadow-lg">
         <span>Connection failed</span>
       </div>
     );
@@ -152,7 +140,9 @@ export function VoiceAgent() {
 
   // connected
   return (
-    <div className="flex items-center gap-2">
+    <>
+      <AICam stream={aiStream} speaking={agentSpeaking} />
+      <div className="fixed bottom-6 right-20 z-40 flex items-center gap-2">
       <div className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-zinc-800 text-zinc-200">
         {agentSpeaking ? (
           <>
@@ -181,6 +171,7 @@ export function VoiceAgent() {
         End
       </button>
     </div>
+    </>
   );
 }
 
