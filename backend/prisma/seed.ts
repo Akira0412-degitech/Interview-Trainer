@@ -1,4 +1,5 @@
-import "dotenv/config";
+import dotenv from"dotenv";
+dotenv.config();
 import { PrismaMariaDb } from "@prisma/adapter-mariadb";
 import { PrismaClient } from "../generated/prisma/client";
 
@@ -14,6 +15,11 @@ const prisma = new PrismaClient({ adapter });
 
 
 async function main() {
+  const existing = await prisma.problem.count();
+  if (existing > 0) {
+    console.log("Seed data already exists. Skipping.");
+    return;
+  }
   await prisma.problem.createMany({
     data: [
       {
