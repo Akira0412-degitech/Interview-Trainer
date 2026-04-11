@@ -29,7 +29,10 @@ app.use(sessionMiddleware);
 
 // ── CORS ──────────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
+  const origin = req.headers.origin;
+  if (origin && origin.startsWith("http://localhost:")) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.sendStatus(200);
@@ -322,7 +325,7 @@ webSocketServer.on("connection", (ws, request) => {
       const parsedMessage = JSON.parse(message);
       switch (parsedMessage.type) {
         case "code":
-          session.code = parsedMessage.code;
+          sess.code = parsedMessage.code;
           break;
       }
     } catch (error) {
