@@ -372,12 +372,19 @@ app.patch("/api/sessions/:id/end", authenticate, async (req, res) => {
   try {
     const openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+    const personalityInstructions = {
+      friendly: `You are an encouraging and supportive interviewer. Highlight what the candidate did well before pointing out areas for improvement. Be warm and constructive. Give the benefit of the doubt on minor issues. Scoring should be generous — reward effort and partial solutions.`,
+      strict: `You are a rigorous, no-nonsense interviewer with high standards. Hold the candidate to professional expectations. Point out every inefficiency, edge case miss, and communication gap. Do not inflate the score — only award high marks for clean, optimal, well-explained solutions.`,
+      neutral: `You are an objective, balanced interviewer. Evaluate the candidate fairly without bias in either direction. Acknowledge strengths and weaknesses equally. Score based purely on correctness, code quality, and communication.`,
+    };
+
     const prompt = `
 You are a coding interview evaluator.
 
+Interviewer personality: ${personalityInstructions[existing.personality]}
+
 Problem: ${existing.problem.title}
 Description: ${existing.problem.description}
-Personality: ${existing.personality}
 
 The candidate's final code:
 \`\`\`
@@ -387,10 +394,10 @@ ${finalCode ?? "No code submitted"}
 Interview transcript:
 ${transcript ?? "No transcript available"}
 
-Please evaluate the candidate and respond in JSON format:
+Evaluate the candidate according to your interviewer personality and respond in JSON format:
 {
   "score": <integer 0-100>,
-  "feedback": "<detailed feedback in 2-3 paragraphs covering code quality, problem solving approach, and communication>"
+  "feedback": "<detailed feedback in 2-3 paragraphs covering code quality, problem solving approach, and communication. Tone must match the interviewer personality.>"
 }
 `;
 
