@@ -1,0 +1,74 @@
+services:
+
+  # ── Frontend (Next.js) ──────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - backend
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # ── Backend (Express + WebSocket) ───────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"   # HTTP API
+      - "5000:5000"   # WebSocket
+    environment:
+      - NODE_ENV=production
+      - SANDBOX_URL=http://sandbox:8888
+    depends_on:
+      sandbox:
+        condition: service_healthy
+    networks:
+      - app-network
+      - sandbox-network
+    restart: unless-stopped
+
+  # ── Sandbox (isolated code execution) ───────────────────────────────────
+  sandbox:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile
+    # No ports exposed to the host — only reachable from backend via sandbox-network
+    networks:
+      - sandbox-network
+    environment:
+      - NODE_ENV=production
+    # ── Security hardening ──────────────────────────────────────────────
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      # Writable /tmp for temporary code files; size-limited
+      - /tmp:size=64m,mode=1777
+    mem_limit: 256m
+    memswap_limit: 256m   # disable swap (swap == mem_limit)
+    cpus: "0.5"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:8888/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  app-network:
+    driver: bridge
+
+  # internal: true means containers on this network cannot reach the internet
+  sandbox-network:
+    driver: bridge
+    internal: true
