@@ -1,0 +1,69 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  name         String    @db.VarChar(100)
+  email        String    @unique @db.VarChar(255)
+  passwordHash String    @db.VarChar(255)
+  createdAt    DateTime  @default(now())
+  sessions     Session[]
+}
+
+model Problem {
+  id          Int       @id @default(autoincrement())
+  title       String    @db.VarChar(255)
+  difficulty  Difficulty
+  category    String    @db.VarChar(100)
+  description String    @db.Text
+  hints       Json
+  testCases   Json
+  createdAt   DateTime  @default(now())
+  sessions    Session[]
+}
+
+model Session {
+  id            Int             @id @default(autoincrement())
+  userId        Int
+  problemId     Int
+  personality   Personality
+  startedAt     DateTime        @default(now())
+  endedAt       DateTime?
+  transcript    String?         @db.Text
+  feedback      String?         @db.Text
+  score         Int?
+  user          User            @relation(fields: [userId], references: [id])
+  problem       Problem         @relation(fields: [problemId], references: [id])
+  codeSnapshots CodeSnapshot[]
+}
+
+model CodeSnapshot {
+  id         Int      @id @default(autoincrement())
+  sessionId  Int
+  code       String   @db.Text
+  capturedAt DateTime @default(now())
+  session    Session  @relation(fields: [sessionId], references: [id])
+}
+
+enum Difficulty {
+  easy
+  medium
+  hard
+}
+
+enum Personality {
+  friendly
+  strict
+  neutral
+}
