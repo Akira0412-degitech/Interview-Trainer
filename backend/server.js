@@ -1,16 +1,20 @@
+import "dotenv/config";
 import express from "express";
 import session from "express-session";
-import openai from "openai";
-import { WebSocketServer, WebSocket } from "ws";
+import { WebSocketServer } from "ws";
 import httpServer from "http";
+import { prisma } from "./lib/prisma.js";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
 
 const SANDBOX_URL = process.env.SANDBOX_URL || "http://localhost:8888";
 
 const app = express();
 const webSocketServer = new WebSocketServer({ noServer: true });
 const server = httpServer.createServer(app);
+
 const sessionMiddleware = session({
-  secret: "your-secret-key",
+  secret: process.env.SESSION_SECRET || "dev-secret",
   resave: false,
   saveUninitialized: true,
 });
@@ -18,7 +22,7 @@ const sessionMiddleware = session({
 app.use(express.json());
 app.use(sessionMiddleware);
 
-// CORS for local Next.js dev
+// ── CORS ──────────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -145,10 +149,9 @@ app.post("/api/run", async (req, res) => {
   }
 
   const testCases = mode === "submit" ? problem.submit : problem.run;
-  const harness =
-    language === "python"
-      ? buildPythonHarness(code, problem.fn, testCases, problem.compare)
-      : buildJSHarness(code, problem.fn, testCases, problem.compare);
+  const harness = language === "python"
+    ? buildPythonHarness(code, problem.fn, testCases, problem.compare)
+    : buildJSHarness(code, problem.fn, testCases, problem.compare);
 
   try {
     const sandboxRes = await fetch(`${SANDBOX_URL}/execute`, {
@@ -183,6 +186,89 @@ app.post("/api/run", async (req, res) => {
   }
 });
 
+// ── Problems ──────────────────────────────────────────────────────────────
+app.get("/api/problems", async (req, res) => {
+  const { difficulty, category } = req.query;
+  const problems = await prisma.problem.findMany({
+    where: {
+      ...(difficulty ? { difficulty } : {}),
+      ...(category ? { category } : {}),
+    },
+    orderBy: { id: "asc" },
+  });
+
+  const parsed = problems.map((p) => ({
+    ...p,
+    hints: p.hints,
+    testCases: p.testCases,
+  }));
+
+  res.json(parsed);
+});
+
+app.get("/api/problems/:id", async (req, res) => {
+  const problem = await prisma.problem.findUnique({
+    where: { id: Number(req.params.id) },
+  });
+
+  if (!problem) return res.status(404).json({ error: "Problem not found" });
+
+  res.json({
+    ...problem,
+    hints: JSON.parse(problem.hints),
+    testCases: JSON.parse(problem.testCases),
+  });
+});
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+app.post("/api/auth/signup", async (req, res) => {
+  const { name, email, password } = req.body;
+
+  if (!name || !email || !password)
+    return res.status(400).json({ error: "name, email, password are required" });
+
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing)
+    return res.status(409).json({ error: "Email already in use" });
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const user = await prisma.user.create({
+    data: { name, email, passwordHash },
+  });
+
+  const token = jwt.sign(
+    { userId: user.id },
+    process.env.JWT_SECRET || "dev-secret",
+    { expiresIn: "7d" }
+  );
+
+  res.status(201).json({ token, user: { id: user.id, name: user.name, email: user.email } });
+});
+
+app.post("/api/auth/signin", async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password)
+    return res.status(400).json({ error: "email and password are required" });
+
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user)
+    return res.status(401).json({ error: "Invalid email or password" });
+
+  const valid = await bcrypt.compare(password, user.passwordHash);
+  if (!valid)
+    return res.status(401).json({ error: "Invalid email or password" });
+
+  const token = jwt.sign(
+    { userId: user.id },
+    process.env.JWT_SECRET || "dev-secret",
+    { expiresIn: "7d" }
+  );
+
+  res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
+});
+
+// ── WebSocket ─────────────────────────────────────────────────────────────
 function handleUpgrade(request, socket, head) {
   sessionMiddleware(request, {}, () => {
     webSocketServer.handleUpgrade(request, socket, head, (ws) => {
@@ -192,21 +278,17 @@ function handleUpgrade(request, socket, head) {
 }
 
 webSocketServer.on("connection", (ws, request) => {
-  const session = request.session;
+  const sess = request.session;
 
   ws.on("message", async (message) => {
     try {
-      const parsedMessage = JSON.parse(message);
-      if (parsedMessage.type === "sync") {
-        session.code = parsedMessage.code;
+      const parsed = JSON.parse(message.toString());
+      if (parsed.type === "sync") {
+        sess.code = parsed.code;
       }
     } catch (error) {
       console.error("Error processing message:", error);
-      ws.send(
-        JSON.stringify({
-          error: "An error occurred while processing your request.",
-        }),
-      );
+      ws.send(JSON.stringify({ error: "An error occurred." }));
     }
   });
 });
@@ -219,10 +301,6 @@ server.on("upgrade", (request, socket, head) => {
   }
 });
 
-server.listen(5000, () => {
-  console.log("Server is running on port 3000");
-});
-
-app.listen(8080, () => {
-  console.log("Server is running on port 8080");
+server.listen(8080, () => {
+  console.log("Server running on port 8080");
 });
