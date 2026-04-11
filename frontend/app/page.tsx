@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react";
 import dynamic from "next/dynamic";
+import { VoiceAgent } from "./components/VoiceAgent";
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 
@@ -350,6 +351,7 @@ export default function Home() {
         </div>
 
         <div className="flex items-center gap-2">
+          <VoiceAgent/>
           <button
             onClick={handleRun}
             disabled={runResult.status === "running"}

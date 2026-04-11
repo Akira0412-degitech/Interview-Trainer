@@ -52,6 +52,8 @@ services:
       - DATABASE_PASSWORD=1234
       - DATABASE_NAME=interview_trainer
       - DATABASE_PORT=3306
+    env_file:
+      - ./backend/.env
     depends_on:
       sandbox:
         condition: service_healthy
