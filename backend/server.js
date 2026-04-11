@@ -1,13 +1,18 @@
 import "dotenv/config";
 import express from "express";
 import session from "express-session";
-import { WebSocketServer } from "ws";
+import openai from "openai";
+
+import { WebSocketServer, WebSocket } from "ws";
 import httpServer from "http";
 import { prisma } from "./lib/prisma.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import OpenAI from "openai";
 
+const client = new openai.OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 const SANDBOX_URL = process.env.SANDBOX_URL || "http://localhost:8888";
 
 const app = express();
@@ -25,7 +30,10 @@ app.use(sessionMiddleware);
 
 // ── CORS ──────────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
+  const origin = req.headers.origin;
+  if (origin && origin.startsWith("http://localhost:")) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.sendStatus(200);
@@ -129,6 +137,37 @@ function formatResults(results, mode) {
   });
   return { status: allPassed ? "accepted" : "wrong_answer", output: out };
 }
+
+// ── /api/realtime/session ─────────────────────────────────────────────────
+app.post("/api/realtime/session", async (req, res) => {
+ 
+  try {
+    const sessionRes = await fetch("https://api.openai.com/v1/realtime/sessions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-realtime-preview-2024-12-17",
+        voice: "alloy",
+        instructions: "You are a coding interviewer from a company.",
+        turn_detection: { type: "server_vad" },
+      }),
+    });
+
+    if (!sessionRes.ok) {
+      const errText = await sessionRes.text();
+      return res.status(sessionRes.status).json({ error: errText });
+    }
+
+    const session = await sessionRes.json();
+    res.json({ client_secret: session.client_secret });
+  } catch (err) {
+    console.error("Realtime session error:", err);
+    res.status(500).json({ error: "Failed to create realtime session" });
+  }
+});
 
 // ── /api/run ──────────────────────────────────────────────────────────────
 app.post("/api/run", async (req, res) => {
@@ -412,6 +451,7 @@ app.get("/api/users/me/sessions", authenticate, async (req, res) => {
 
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
+
 function handleUpgrade(request, socket, head) {
   sessionMiddleware(request, {}, () => {
     webSocketServer.handleUpgrade(request, socket, head, (ws) => {
@@ -425,9 +465,11 @@ webSocketServer.on("connection", (ws, request) => {
 
   ws.on("message", async (message) => {
     try {
-      const parsed = JSON.parse(message.toString());
-      if (parsed.type === "sync") {
-        sess.code = parsed.code;
+      const parsedMessage = JSON.parse(message);
+      switch (parsedMessage.type) {
+        case "code":
+          sess.code = parsedMessage.code;
+          break;
       }
     } catch (error) {
       console.error("Error processing message:", error);
@@ -437,7 +479,7 @@ webSocketServer.on("connection", (ws, request) => {
 });
 
 server.on("upgrade", (request, socket, head) => {
-  if (request.url === "/api/sync") {
+  if (request.url === "/api/session") {
     handleUpgrade(request, socket, head);
   } else {
     socket.destroy();
