@@ -2,25 +2,53 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import AuthCard from "@/components/auth/AuthCard";
 import FormField from "@/components/auth/FormField";
 import PasswordField from "@/components/auth/PasswordField";
 import SubmitButton from "@/components/auth/SubmitButton";
 
 export default function SignupPage() {
+  const router = useRouter();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const passwordMismatch =
     confirmPassword.length > 0 && password !== confirmPassword;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (passwordMismatch) return;
-    // TODO: call POST /api/auth/register with { name, email, password }
+    setError(null);
+    setLoading(true);
+
+    try {
+      const res = await fetch("http://localhost:8080/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email, password }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setError(data.error || "Sign up failed.");
+        return;
+      }
+
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("user", JSON.stringify(data.user));
+      router.push("/session");
+    } catch {
+      setError("Server error. Make sure the backend and database are running.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -111,7 +139,13 @@ export default function SignupPage() {
           </span>
         </label>
 
-        <SubmitButton disabled={passwordMismatch || !agreedToTerms}>
+        {error && (
+          <p className="text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-lg px-3 py-2">
+            {error}
+          </p>
+        )}
+
+        <SubmitButton loading={loading} disabled={passwordMismatch || !agreedToTerms}>
           Create account
         </SubmitButton>
       </form>
