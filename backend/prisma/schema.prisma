@@ -44,6 +44,7 @@ model Session {
   transcript    String?         @db.Text
   feedback      String?         @db.Text
   score         Int?
+  subScores     Json?
   user          User            @relation(fields: [userId], references: [id])
   problem       Problem         @relation(fields: [problemId], references: [id])
   codeSnapshots CodeSnapshot[]

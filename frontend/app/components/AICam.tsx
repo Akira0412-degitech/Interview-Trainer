@@ -5,18 +5,13 @@ import { useEffect, useRef, useState, useCallback } from "react";
 interface AICamProps {
   stream: MediaStream | null;
   speaking: boolean;
+  camOff?: boolean;
 }
 
 const W = 256;
-const H_SPEC = 56;
-const BAR_COUNT = 40;
 
-export default function AICam({ stream, speaking }: AICamProps) {
+export default function AICam({ stream, speaking, camOff }: AICamProps) {
   const panelRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const rafRef = useRef<number>(0);
   const dragRef = useRef<{ active: boolean; ox: number; oy: number }>({
     active: false,
     ox: 0,
@@ -25,119 +20,6 @@ export default function AICam({ stream, speaking }: AICamProps) {
 
   // Position: left side, just above the VideoPip in the bottom-right
   const [pos, setPos] = useState({ x: 24, y: 120 });
-
-  // ── Audio analysis setup ──────────────────────────────────────────────────
-  useEffect(() => {
-    if (!stream) {
-      audioCtxRef.current?.close();
-      audioCtxRef.current = null;
-      analyserRef.current = null;
-      return;
-    }
-
-    // AudioContext just for analysis — does NOT route audio to speakers
-    const AudioCtx = window.AudioContext ?? (window as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    // Must resume — browsers start AudioContext suspended until after user gesture
-    ctx.resume();
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 1024;
-    analyser.smoothingTimeConstant = 0.82;
-    ctx.createMediaStreamSource(stream).connect(analyser);
-    audioCtxRef.current = ctx;
-    analyserRef.current = analyser;
-
-    return () => {
-      ctx.close();
-      audioCtxRef.current = null;
-      analyserRef.current = null;
-    };
-  }, [stream]);
-
-  // ── Canvas draw loop ──────────────────────────────────────────────────────
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx2d = canvas.getContext("2d");
-    if (!ctx2d) return;
-
-    const gap = 2.5;
-    const barW = (W - (BAR_COUNT - 1) * gap) / BAR_COUNT;
-
-    let lastTime = 0;
-
-    const tick = (time: number) => {
-      rafRef.current = requestAnimationFrame(tick);
-      if (time - lastTime < 16) return; // cap ~60 fps
-      lastTime = time;
-
-      ctx2d.clearRect(0, 0, W, H_SPEC);
-
-      const analyser = analyserRef.current;
-      let heights: number[] = [];
-      // Always read real frequency data when analyser is ready — never gate on
-      // the speaking prop, which lags behind actual audio by event-round-trip.
-      // Derive "hasAudio" from actual energy so colors track true playback.
-      let hasAudio = false;
-
-      if (analyser) {
-        if (audioCtxRef.current?.state === "suspended") {
-          audioCtxRef.current.resume();
-        }
-        const freqData = new Uint8Array(analyser.frequencyBinCount);
-        analyser.getByteFrequencyData(freqData);
-        const step = Math.floor(freqData.length / BAR_COUNT);
-        let sum = 0;
-        for (let i = 0; i < BAR_COUNT; i++) {
-          const v = freqData[i * step] ?? 0;
-          sum += v;
-          heights.push(Math.max(2, (v / 255) * (H_SPEC - 4)));
-        }
-        hasAudio = sum / BAR_COUNT > 4; // energy threshold
-      } else {
-        // Gentle breathing idle animation
-        const t = time / 1000;
-        for (let i = 0; i < BAR_COUNT; i++) {
-          const phase = (i / BAR_COUNT) * Math.PI * 2;
-          heights.push(2 + 3 * Math.abs(Math.sin(t * 0.8 + phase)));
-        }
-      }
-
-      for (let i = 0; i < BAR_COUNT; i++) {
-        const bh = heights[i];
-        const bx = i * (barW + gap);
-        const by = H_SPEC - bh;
-
-        const grad = ctx2d.createLinearGradient(bx, by, bx, H_SPEC);
-        if (hasAudio) {
-          grad.addColorStop(0, "rgba(56,189,248,0.95)");   // sky-400
-          grad.addColorStop(0.45, "rgba(99,102,241,0.9)"); // indigo-500
-          grad.addColorStop(1, "rgba(167,139,250,0.7)");   // violet-400
-        } else {
-          grad.addColorStop(0, "rgba(100,116,139,0.35)");
-          grad.addColorStop(1, "rgba(71,85,105,0.15)");
-        }
-
-        ctx2d.fillStyle = grad;
-        // Rounded-top bar via manual path
-        const r = Math.min(barW / 2, 2);
-        ctx2d.beginPath();
-        ctx2d.moveTo(bx + r, by);
-        ctx2d.lineTo(bx + barW - r, by);
-        ctx2d.quadraticCurveTo(bx + barW, by, bx + barW, by + r);
-        ctx2d.lineTo(bx + barW, H_SPEC);
-        ctx2d.lineTo(bx, H_SPEC);
-        ctx2d.lineTo(bx, by + r);
-        ctx2d.quadraticCurveTo(bx, by, bx + r, by);
-        ctx2d.closePath();
-        ctx2d.fill();
-      }
-    };
-
-    rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [stream]);
 
   // ── Drag ─────────────────────────────────────────────────────────────────
   const onDragDown = useCallback((e: React.MouseEvent) => {
@@ -164,7 +46,7 @@ export default function AICam({ stream, speaking }: AICamProps) {
     };
   }, []);
 
-  if (!stream) return null;
+  if (!stream || camOff) return null;
 
   return (
     <div
@@ -248,17 +130,6 @@ export default function AICam({ stream, speaking }: AICamProps) {
             <BotIcon speaking={speaking} />
           </div>
         </div>
-      </div>
-
-      {/* ── Spectrogram ── */}
-      <div className="bg-zinc-950 px-3 pt-2 pb-3">
-        <canvas
-          ref={canvasRef}
-          width={W}
-          height={H_SPEC}
-          className="w-full"
-          style={{ height: H_SPEC }}
-        />
       </div>
     </div>
   );

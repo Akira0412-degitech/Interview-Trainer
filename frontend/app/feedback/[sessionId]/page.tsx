@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useParams } from "next/navigation";
 import ScoreRing from "@/components/feedback/ScoreRing";
 import PerformanceChart, {
   SubScore,
@@ -10,145 +12,46 @@ import TranscriptViewer, {
 } from "@/components/feedback/TranscriptViewer";
 
 // ---------------------------------------------------------------------------
-// Types — mirrors the Prisma Session model + relations
+// Types
 // ---------------------------------------------------------------------------
-type Difficulty = "Easy" | "Medium" | "Hard";
+type Difficulty = "easy" | "medium" | "hard";
 
-interface MockSession {
+interface SessionData {
   id: number;
   personality: string;
   startedAt: string;
-  endedAt: string;
-  score: number;
-  feedback: string;
+  endedAt: string | null;
+  score: number | null;
+  feedback: string | null;
+  subScores: SubScore[] | null;
+  transcript: TranscriptMessage[];
   problem: {
     title: string;
     difficulty: Difficulty;
   };
-  subScores: SubScore[];
-  transcript: TranscriptMessage[];
 }
-
-// ---------------------------------------------------------------------------
-// Mock data — replace with API fetch when endpoint is ready
-// TODO: fetch GET /api/sessions/:sessionId
-// ---------------------------------------------------------------------------
-const MOCK_SESSION: MockSession = {
-  id: 1,
-  personality: "Professional",
-  startedAt: "2026-04-11T10:00:00",
-  endedAt: "2026-04-11T10:42:00",
-  score: 82,
-  problem: {
-    title: "Two Sum",
-    difficulty: "Easy",
-  },
-  feedback: `Your performance in this session was strong overall. You demonstrated a clear understanding of the problem requirements and quickly moved from a brute-force approach to an optimised hash-map solution — exactly the kind of thinking interviewers look for.\n\nYour code was clean and readable, with sensible variable names and a logical structure. The solution ran correctly on all provided test cases. A small improvement area: explicitly handling the edge case where the input array contains duplicate values would show extra rigour.\n\nCommunication was a highlight. You explained your thought process at each stage without being prompted, which is a strong signal in real interviews. You asked one good clarifying question about whether the answer indices must be in order — this shows interview awareness.\n\nAlgorithm efficiency was good — O(n) time and O(n) space. You could have briefly mentioned why you traded space for time to strengthen your explanation further.\n\nOverall, this was a confident and capable performance. With a bit more attention to edge-case discussion, you would be well-positioned for interviews at mid-to-senior engineering levels.`,
-  subScores: [
-    { category: "Problem Understanding", score: 90, max: 100 },
-    { category: "Code Quality", score: 78, max: 100 },
-    { category: "Communication", score: 88, max: 100 },
-    { category: "Algorithm Efficiency", score: 75, max: 100 },
-    { category: "Edge Case Handling", score: 70, max: 100 },
-  ],
-  transcript: [
-    {
-      role: "ai",
-      content:
-        "Welcome! I'm your interviewer today. Let's get started with a problem. Please read through it and feel free to ask any clarifying questions before you begin coding.",
-      timestamp: "10:00 AM",
-    },
-    {
-      role: "user",
-      content:
-        "Thanks! One quick question — do the returned indices need to be in ascending order, or can they be in any order?",
-      timestamp: "10:01 AM",
-    },
-    {
-      role: "ai",
-      content:
-        "Great question. The indices can be returned in any order — there's no requirement on their ordering.",
-      timestamp: "10:01 AM",
-    },
-    {
-      role: "user",
-      content:
-        "Got it. I'll start with a brute force O(n²) approach to make sure I understand the problem, then optimise from there.",
-      timestamp: "10:02 AM",
-    },
-    {
-      role: "ai",
-      content:
-        "That's a solid approach. Go ahead and walk me through your thinking as you code.",
-      timestamp: "10:02 AM",
-    },
-    {
-      role: "user",
-      content:
-        "So for brute force, I'd check every pair. But I can do better — I'll use a hash map to store each number and its index as I iterate. For each element, I check if target minus that element already exists in the map.",
-      timestamp: "10:08 AM",
-    },
-    {
-      role: "ai",
-      content:
-        "Nice. Can you tell me the time and space complexity of your optimised solution?",
-      timestamp: "10:15 AM",
-    },
-    {
-      role: "user",
-      content:
-        "Time complexity is O(n) since we do a single pass. Space complexity is O(n) in the worst case for the hash map.",
-      timestamp: "10:16 AM",
-    },
-    {
-      role: "ai",
-      content:
-        "Correct. How does your solution handle duplicate values in the input array?",
-      timestamp: "10:28 AM",
-    },
-    {
-      role: "user",
-      content:
-        "Hmm, good point. If there are duplicates that sum to the target, like [3, 3] with target 6, we'd store index 0 first, then at index 1 we'd find 3 already in the map — so we'd return [0, 1]. I think it handles that correctly.",
-      timestamp: "10:31 AM",
-    },
-    {
-      role: "ai",
-      content:
-        "That's right. Good catch. Let's wrap up — can you summarise the approach you took and why you chose it?",
-      timestamp: "10:38 AM",
-    },
-    {
-      role: "user",
-      content:
-        "Sure. I started with brute force to validate my understanding, then switched to a hash-map approach to get down to O(n) time. The trade-off is O(n) extra space, but that's acceptable here since the time improvement is significant.",
-      timestamp: "10:40 AM",
-    },
-    {
-      role: "ai",
-      content:
-        "Well done. That's a clear and thorough explanation. We'll wrap up the session here — great work today.",
-      timestamp: "10:42 AM",
-    },
-  ],
-};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 const difficultyColor: Record<Difficulty, string> = {
-  Easy: "text-emerald-400",
-  Medium: "text-yellow-400",
-  Hard: "text-red-400",
+  easy: "text-emerald-400",
+  medium: "text-yellow-400",
+  hard: "text-red-400",
 };
 
 const difficultyBg: Record<Difficulty, string> = {
-  Easy: "bg-emerald-400/10 border-emerald-400/20",
-  Medium: "bg-yellow-400/10 border-yellow-400/20",
-  Hard: "bg-red-400/10 border-red-400/20",
+  easy: "bg-emerald-400/10 border-emerald-400/20",
+  medium: "bg-yellow-400/10 border-yellow-400/20",
+  hard: "bg-red-400/10 border-red-400/20",
 };
 
-function formatDuration(start: string, end: string): string {
+function capitalize(s: string) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function formatDuration(start: string, end: string | null): string {
+  if (!end) return "—";
   const ms = new Date(end).getTime() - new Date(start).getTime();
   const mins = Math.floor(ms / 60000);
   if (mins < 60) return `${mins} min`;
@@ -166,7 +69,7 @@ function formatDate(iso: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Stat card used in the hero row
+// Stat card
 // ---------------------------------------------------------------------------
 function StatCard({
   label,
@@ -196,8 +99,56 @@ function StatCard({
 // Page
 // ---------------------------------------------------------------------------
 export default function FeedbackPage() {
-  // TODO: const params = useParams(); fetch `/api/sessions/${params.sessionId}`
-  const session = MOCK_SESSION;
+  const params = useParams();
+  const sessionId = params.sessionId as string;
+  const [session, setSession] = useState<SessionData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+
+    async function poll() {
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}`);
+        if (!res.ok) { if (!cancelled) setError("Session not found."); return; }
+        const data = await res.json();
+        if (cancelled) return;
+        // If feedback hasn't been generated yet, poll again in 3s
+        if (!data.feedback) {
+          setTimeout(poll, 3000);
+        } else {
+          setSession(data);
+          setLoading(false);
+        }
+      } catch {
+        if (!cancelled) setError("Failed to load session.");
+      }
+    }
+
+    poll();
+    return () => { cancelled = true; };
+  }, [sessionId]);
+
+  if (loading && !error) {
+    return (
+      <div className="min-h-screen bg-[#1a1a1a] flex flex-col items-center justify-center gap-3">
+        <span className="inline-block w-8 h-8 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+        <p className="text-zinc-400 text-sm">Loading your feedback…</p>
+      </div>
+    );
+  }
+
+  if (error || !session) {
+    return (
+      <div className="min-h-screen bg-[#1a1a1a] flex flex-col items-center justify-center gap-3">
+        <p className="text-red-400 text-sm">{error ?? "Session not found."}</p>
+        <Link href="/" className="text-xs text-zinc-400 hover:text-white underline">Back to home</Link>
+      </div>
+    );
+  }
+
   const { problem, score, feedback, subScores, transcript } = session;
 
   return (
@@ -268,7 +219,7 @@ export default function FeedbackPage() {
           <div className="bg-[#1e1e1e] rounded-xl border border-zinc-800 p-6 flex flex-wrap gap-6 items-center">
             {/* Score ring */}
             <div className="shrink-0">
-              <ScoreRing score={score} size={152} />
+              <ScoreRing score={score ?? 0} size={152} />
             </div>
 
             {/* Divider */}
@@ -288,7 +239,7 @@ export default function FeedbackPage() {
               />
               <StatCard
                 label="Difficulty"
-                value={problem.difficulty}
+                value={capitalize(problem.difficulty)}
                 valueClass={difficultyColor[problem.difficulty]}
                 icon={
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -307,7 +258,7 @@ export default function FeedbackPage() {
               />
               <StatCard
                 label="Interviewer"
-                value={session.personality}
+                value={capitalize(session.personality)}
                 icon={
                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
@@ -328,7 +279,7 @@ export default function FeedbackPage() {
                 </h2>
               </div>
               <div className="space-y-3">
-                {feedback.split("\n\n").map((para, i) => (
+                {(feedback ?? "").split("\n\n").map((para, i) => (
                   <p key={i} className="text-sm text-zinc-300 leading-relaxed">
                     {para}
                   </p>
@@ -344,7 +295,7 @@ export default function FeedbackPage() {
                   Performance Breakdown
                 </h2>
               </div>
-              <PerformanceChart scores={subScores} />
+              <PerformanceChart scores={subScores ?? []} />
 
               {/* Legend */}
               <div className="flex items-center gap-4 pt-2 border-t border-zinc-800">
@@ -384,15 +335,15 @@ export default function FeedbackPage() {
             <p className="text-sm text-zinc-300">
               You attempted a{" "}
               <span className={`font-semibold ${difficultyColor[problem.difficulty]}`}>
-                {problem.difficulty}
+                {capitalize(problem.difficulty)}
               </span>{" "}
               difficulty problem. Your score of{" "}
-              <span className="font-semibold text-white">{score}/100</span>{" "}
+              <span className="font-semibold text-white">{score ?? "—"}/100</span>{" "}
               reflects a strong result at this level. Try a{" "}
               <span className="font-semibold text-white">
-                {problem.difficulty === "Easy"
+                {problem.difficulty === "easy"
                   ? "Medium"
-                  : problem.difficulty === "Medium"
+                  : problem.difficulty === "medium"
                   ? "Hard"
                   : "new Hard"}
               </span>{" "}

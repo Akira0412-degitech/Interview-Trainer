@@ -24,3 +24,9 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Monaco editor — AI typing highlight */
+.ai-typed-highlight {
+  background-color: rgba(249, 115, 22, 0.12);
+  border-radius: 2px;
+}

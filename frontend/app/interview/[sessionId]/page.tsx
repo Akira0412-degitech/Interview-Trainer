@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect, use } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { VoiceAgent } from "../../components/VoiceAgent";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 
 type Difficulty = "easy" | "medium" | "hard";
@@ -192,12 +192,92 @@ export default function Home() {
     output?: string;
   }>({ status: "idle" });
 
+  const [generatingFeedback, setGeneratingFeedback] = useState(false);
+  const [aiTyping, setAiTyping] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const wsRef = useRef<WebSocket | null>(null);
   const codeRef = useRef<string>(code);
   const codeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const editorRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const monacoRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const aiDecoIdsRef = useRef<any[]>([]);
+  const aiTypingActiveRef = useRef(false);
 
   useEffect(() => { codeRef.current = code; }, [code]);
 
+  const handleEditorMount = useCallback((editor: unknown, monaco: unknown) => {
+    editorRef.current = editor;
+    monacoRef.current = monaco;
+  }, []);
+
+  const startAiTyping = useCallback(async (content: string) => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco || aiTypingActiveRef.current) return;
+    aiTypingActiveRef.current = true;
+    setAiTyping(true);
+
+    const model = editor.getModel();
+    if (!model) { aiTypingActiveRef.current = false; setAiTyping(false); return; }
+
+    // Prepend a newline separator if the editor already has content
+    const existing = model.getValue();
+    const insertContent = existing && !existing.endsWith("\n") ? "\n" + content : content;
+
+    const startLineNumber = model.getLineCount();
+
+    for (let i = 0; i < insertContent.length; i++) {
+      const ch = insertContent[i];
+      const lineCount = model.getLineCount();
+      const lastCol = model.getLineLength(lineCount) + 1;
+      const pos = new monaco.Range(lineCount, lastCol, lineCount, lastCol);
+
+      editor.executeEdits("ai-typing", [{ range: pos, text: ch, forceMoveMarkers: true }]);
+
+      // Move native cursor to where AI is typing
+      const newLineCount = model.getLineCount();
+      const newLastCol = model.getLineLength(newLineCount) + 1;
+      editor.setPosition({ lineNumber: newLineCount, column: newLastCol });
+      editor.revealPosition({ lineNumber: newLineCount, column: newLastCol });
+
+      // Highlight AI-typed region with orange tint
+      aiDecoIdsRef.current = editor.deltaDecorations(aiDecoIdsRef.current, [{
+        range: new monaco.Range(startLineNumber, 1, newLineCount, newLastCol),
+        options: { inlineClassName: "ai-typed-highlight", isWholeLine: false },
+      }]);
+
+      // Human-like variable delay
+      const delay =
+        ch === "\n" ? 140 + Math.random() * 120
+        : ch === " " ? 55 + Math.random() * 35
+        : ",;(){}[]".includes(ch) ? 80 + Math.random() * 60
+        : 35 + Math.random() * 45;
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    }
+
+    // Sync final code state and push to server
+    const finalCode = model.getValue();
+    setCode(finalCode);
+    codeRef.current = finalCode;
+    wsRef.current?.send(JSON.stringify({ type: "code", code: finalCode }));
+
+    // Fade out decoration after a moment
+    setTimeout(() => {
+      if (editorRef.current) {
+        aiDecoIdsRef.current = editorRef.current.deltaDecorations(aiDecoIdsRef.current, []);
+      }
+    }, 2500);
+
+    aiTypingActiveRef.current = false;
+    setAiTyping(false);
+  }, []);
+
+  const router = useRouter();
   const params = useParams();
   const { sessionId } = params;
 
@@ -221,10 +301,24 @@ export default function Home() {
           };
           setActiveProblem(problem);
           setCode(generateStarterCode("python", problem.title));
+          // Start elapsed timer when interview begins
+          timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
           break;
         }
-        
-        
+        case "generating_feedback": {
+          if (timerRef.current) clearInterval(timerRef.current);
+          setGeneratingFeedback(true);
+          break;
+        }
+        case "interview_ended": {
+          if (timerRef.current) clearInterval(timerRef.current);
+          router.push(`/feedback/${sessionId}`);
+          break;
+        }
+        case "ai_typing": {
+          startAiTyping(message.content);
+          break;
+        }
       }
     };
 
@@ -234,11 +328,16 @@ export default function Home() {
 
     return () => {
       if (codeDebounceRef.current) clearTimeout(codeDebounceRef.current);
+      if (timerRef.current) clearInterval(timerRef.current);
       ws.close();
       wsRef.current = null;
     };
 
-  }, [sessionId]);
+  }, [sessionId, startAiTyping]);
+
+  const handleEndInterview = useCallback(() => {
+    wsRef.current?.send(JSON.stringify({ type: "end_interview" }));
+  }, []);
 
   const handleLanguageChange = useCallback((lang: Language) => {
     setLanguage(lang);
@@ -281,13 +380,34 @@ export default function Home() {
   // Vertical resize (editor | console)
   const { consolePx, containerRef: vContainer, onDividerMouseDown: onVDivider } = useVerticalResize(180);
 
+  function formatElapsed(s: number) {
+    const m = Math.floor(s / 60).toString().padStart(2, "0");
+    const sec = (s % 60).toString().padStart(2, "0");
+    return `${m}:${sec}`;
+  }
+
   return (
     <div className="flex flex-col h-screen bg-[#1a1a1a] text-zinc-100 font-sans overflow-hidden select-none">
+      {/* ── Feedback loading overlay ── */}
+      {generatingFeedback && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#1a1a1a]/90 backdrop-blur-sm">
+          <span className="inline-block w-8 h-8 border-2 border-orange-500 border-t-transparent rounded-full animate-spin mb-4" />
+          <p className="text-zinc-300 text-sm font-medium">Generating your feedback…</p>
+          <p className="text-zinc-500 text-xs mt-1">This usually takes 10–15 seconds</p>
+        </div>
+      )}
       {/* ── Header ── */}
       <header className="flex items-center justify-between px-4 h-11 bg-[#1a1a1a] border-b border-zinc-800 shrink-0 z-10">
         <span className="text-orange-500 font-bold text-base tracking-tight">CodePrep</span>
 
         <div className="flex items-center gap-2">
+          {/* Elapsed timer */}
+          {activeProblem && (
+            <span className="text-xs font-mono text-zinc-500 tabular-nums w-12 text-center">
+              {formatElapsed(elapsed)}
+            </span>
+          )}
+          <div className="w-px h-4 bg-zinc-700" />
           <select
             value={language}
             onChange={(e) => handleLanguageChange(e.target.value as Language)}
@@ -342,12 +462,21 @@ export default function Home() {
         <div ref={vContainer} className="flex-1 flex flex-col overflow-hidden min-w-[200px]">
 
           {/* Editor */}
-          <div className="flex-1 overflow-hidden">
+          <div className="flex-1 overflow-hidden relative">
+            {aiTyping && (
+              <div className="absolute top-2 right-3 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-orange-500/15 border border-orange-500/30 text-orange-400 text-xs font-medium pointer-events-none select-none">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />
+                AI typing…
+              </div>
+            )}
             <MonacoEditor
               height="100%"
               language={MONACO_LANG[language]}
-              value={code}
+              value={aiTyping ? undefined : code}
+              onMount={handleEditorMount}
               onChange={(v) => {
+                // Suppress state updates while AI is animating — we sync at the end
+                if (aiTypingActiveRef.current) return;
                 const newCode = v ?? "";
                 setCode(newCode);
                 codeRef.current = newCode;
@@ -417,7 +546,7 @@ export default function Home() {
           </div>
         </div>
       </div>
-      <VoiceAgent sessionId={String(sessionId)} />
+      <VoiceAgent sessionId={String(sessionId)} onRequestEnd={handleEndInterview} />
     </div>
   );
 }
