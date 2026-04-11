@@ -1,40 +1,25 @@
 import { Router } from "express";
+import { prisma } from "../lib/prisma.js";
 
 const SANDBOX_URL = process.env.SANDBOX_URL || "http://localhost:8888";
 
-const PROBLEMS = {
-  1: {
-    fn: "twoSum",
-    compare: "sortedArray",
-    run: [
-      { args: [[2, 7, 11, 15], 9], expected: [0, 1] },
-      { args: [[3, 2, 4], 6], expected: [1, 2] },
-    ],
-    submit: [
-      { args: [[2, 7, 11, 15], 9], expected: [0, 1] },
-      { args: [[3, 2, 4], 6], expected: [1, 2] },
-      { args: [[3, 3], 6], expected: [0, 1] },
-      { args: [[1, 2, 3, 4, 5], 9], expected: [3, 4] },
-      { args: [[-1, -2, -3, -4, -5], -8], expected: [2, 4] },
-    ],
-  },
-  2: {
-    fn: "isValid",
-    compare: "strict",
-    run: [
-      { args: ["()"], expected: true },
-      { args: ["()[]{}"], expected: true },
-    ],
-    submit: [
-      { args: ["()"], expected: true },
-      { args: ["()[]{}"], expected: true },
-      { args: ["(]"], expected: false },
-      { args: ["([)]"], expected: false },
-      { args: ["{[]}"], expected: true },
-      { args: [""], expected: true },
-    ],
-  },
-};
+function titleToFn(title) {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/(^_|_$)/g, "");
+}
+
+function inferCompare(expected) {
+  return Array.isArray(expected) ? "sortedArray" : "strict";
+}
+
+function convertTestCases(rawCases) {
+  return rawCases.map((tc) => ({
+    args: Object.values(tc.input),
+    expected: tc.expected,
+  }));
+}
 
 function buildPythonHarness(code, fn, testCases, compare) {
   const tc = JSON.stringify(testCases);
@@ -104,13 +89,24 @@ const router = Router();
 router.post("/", async (req, res) => {
   const { code, language, problemId, mode = "run" } = req.body;
 
-  const problem = PROBLEMS[problemId];
-  if (!problem) {
-    return res.json({
-      status: "error",
-      output: `Execution not configured for problem ${problemId} yet.`,
-    });
+  const dbProblem = await prisma.problem.findUnique({ where: { id: Number(problemId) } });
+  if (!dbProblem) {
+    return res.json({ status: "error", output: `Problem ${problemId} not found.` });
   }
+
+  const rawCases = Array.isArray(dbProblem.testCases)
+    ? dbProblem.testCases
+    : JSON.parse(dbProblem.testCases ?? "[]");
+  const allCases = convertTestCases(rawCases);
+  const fn = titleToFn(dbProblem.title);
+  const compare = allCases.length > 0 ? inferCompare(allCases[0].expected) : "strict";
+
+  const problem = {
+    fn,
+    compare,
+    run: allCases.slice(0, Math.min(2, allCases.length)),
+    submit: allCases,
+  };
 
   if (language !== "python" && language !== "javascript") {
     return res.json({

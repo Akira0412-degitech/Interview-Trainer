@@ -9,7 +9,8 @@ COPY package.json package-lock.json ./
 # Install all deps (including prisma CLI in devDependencies)
 RUN npm ci
 
-
+COPY routes ./routes
+COPY ws ./ws
 COPY prisma ./prisma
 COPY lib ./lib
 COPY prisma.config.ts ./

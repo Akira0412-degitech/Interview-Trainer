@@ -1,79 +1,44 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, use } from "react";
 import dynamic from "next/dynamic";
-import { VoiceAgent } from "../components/VoiceAgent";
-
+import { VoiceAgent } from "../../components/VoiceAgent";
+import { useParams } from "next/navigation";
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 
-type Difficulty = "Easy" | "Medium" | "Hard";
+type Difficulty = "easy" | "medium" | "hard";
 type Language = "python" | "javascript" | "typescript" | "java" | "cpp";
+
+interface TestCase {
+  input: Record<string, unknown>;
+  expected: unknown;
+}
 
 interface Problem {
   id: number;
   title: string;
   difficulty: Difficulty;
-  tags: string[];
+  category: string;
   description: string;
-  examples: { input: string; output: string; explanation?: string }[];
-  constraints: string[];
-  starterCode: Record<Language, string>;
+  hints: string[];
+  testCases: TestCase[];
 }
 
-const problems: Problem[] = [
-  {
-    id: 1,
-    title: "Two Sum",
-    difficulty: "Easy",
-    tags: ["Array", "Hash Table"],
-    description:
-      "Given an array of integers `nums` and an integer `target`, return indices of the two numbers such that they add up to `target`.\n\nYou may assume that each input would have **exactly one solution**, and you may not use the same element twice.\n\nYou can return the answer in any order.",
-    examples: [
-      { input: "nums = [2,7,11,15], target = 9", output: "[0,1]", explanation: "Because nums[0] + nums[1] == 9, we return [0, 1]." },
-      { input: "nums = [3,2,4], target = 6", output: "[1,2]" },
-      { input: "nums = [3,3], target = 6", output: "[0,1]" },
-    ],
-    constraints: [
-      "2 <= nums.length <= 10⁴",
-      "-10⁹ <= nums[i] <= 10⁹",
-      "-10⁹ <= target <= 10⁹",
-      "Only one valid answer exists.",
-    ],
-    starterCode: {
-      python: `def twoSum(nums: list[int], target: int) -> list[int]:\n    pass\n`,
-      javascript: `var twoSum = function(nums, target) {\n    \n};\n`,
-      typescript: `function twoSum(nums: number[], target: number): number[] {\n    \n};\n`,
-      java: `class Solution {\n    public int[] twoSum(int[] nums, int target) {\n        \n    }\n}\n`,
-      cpp: `class Solution {\npublic:\n    vector<int> twoSum(vector<int>& nums, int target) {\n        \n    }\n};\n`,
-    },
-  },
-  {
-    id: 2,
-    title: "Valid Parentheses",
-    difficulty: "Easy",
-    tags: ["String", "Stack"],
-    description:
-      "Given a string `s` containing just the characters `'('`, `')'`, `'{'`, `'}'`, `'['` and `']'`, determine if the input string is valid.\n\nAn input string is valid if:\n1. Open brackets must be closed by the same type of brackets.\n2. Open brackets must be closed in the correct order.\n3. Every close bracket has a corresponding open bracket of the same type.",
-    examples: [
-      { input: 's = "()"', output: "true" },
-      { input: 's = "()[]{}"', output: "true" },
-      { input: 's = "(]"', output: "false" },
-    ],
-    constraints: ["1 <= s.length <= 10⁴", "s consists of parentheses only '()[]{}'."],
-    starterCode: {
-      python: `def isValid(s: str) -> bool:\n    pass\n`,
-      javascript: `var isValid = function(s) {\n    \n};\n`,
-      typescript: `function isValid(s: string): boolean {\n    \n};\n`,
-      java: `class Solution {\n    public boolean isValid(String s) {\n        \n    }\n}\n`,
-      cpp: `class Solution {\npublic:\n    bool isValid(string s) {\n        \n    }\n};\n`,
-    },
-  },
-];
+function generateStarterCode(language: Language, title: string): string {
+  const fn = title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/(^_|_$)/g, "");
+  switch (language) {
+    case "python":     return `def ${fn}():\n    pass\n`;
+    case "javascript": return `var ${fn} = function() {\n    \n};\n`;
+    case "typescript": return `function ${fn}(): void {\n    \n}\n`;
+    case "java":       return `class Solution {\n    public void ${fn}() {\n        \n    }\n}\n`;
+    case "cpp":        return `class Solution {\npublic:\n    void ${fn}() {\n        \n    }\n};\n`;
+  }
+}
 
 const difficultyColor: Record<Difficulty, string> = {
-  Easy: "text-emerald-400",
-  Medium: "text-yellow-400",
-  Hard: "text-red-400",
+  easy: "text-emerald-400",
+  medium: "text-yellow-400",
+  hard: "text-red-400",
 };
 
 const LANGUAGES: { value: Language; label: string }[] = [
@@ -144,23 +109,32 @@ function useVerticalResize(initialPx: number) {
 }
 
 // ── Description panel ─────────────────────────────────────────────────────────
-function DescriptionPanel({ problem }: { problem: Problem }) {
+function DescriptionPanel({ problem }: { problem: Problem | null }) {
+  if (!problem) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="flex items-center gap-2 text-sm text-zinc-500">
+          <span className="inline-block w-4 h-4 border-2 border-zinc-600 border-t-transparent rounded-full animate-spin" />
+          Loading problem…
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full overflow-y-auto p-5 space-y-5">
       {/* Title + difficulty */}
       <div>
         <h1 className="text-xl font-semibold text-white mb-1">
-          {problem.id}. {problem.title}
+          {problem.title}
         </h1>
         <div className="flex items-center gap-3 flex-wrap">
-          <span className={`text-sm font-medium ${difficultyColor[problem.difficulty]}`}>
+          <span className={`text-sm font-medium capitalize ${difficultyColor[problem.difficulty]}`}>
             {problem.difficulty}
           </span>
-          {problem.tags.map((tag) => (
-            <span key={tag} className="text-xs px-2 py-0.5 rounded bg-zinc-700 text-zinc-300">
-              {tag}
-            </span>
-          ))}
+          <span className="text-xs px-2 py-0.5 rounded bg-zinc-700 text-zinc-300 capitalize">
+            {problem.category}
+          </span>
         </div>
       </div>
 
@@ -175,80 +149,130 @@ function DescriptionPanel({ problem }: { problem: Problem }) {
         ))}
       </div>
 
-      {/* Examples */}
-      <div className="space-y-3">
-        {problem.examples.map((ex, i) => (
-          <div key={i} className="rounded-lg bg-zinc-800 p-4 text-sm space-y-1">
-            <p className="text-zinc-400 font-medium text-xs uppercase tracking-wide mb-2">Example {i + 1}</p>
-            <div className="font-mono text-xs space-y-1">
-              <p><span className="text-zinc-400">Input: </span><span className="text-zinc-200">{ex.input}</span></p>
-              <p><span className="text-zinc-400">Output: </span><span className="text-zinc-200">{ex.output}</span></p>
-              {ex.explanation && (
-                <p><span className="text-zinc-400">Explanation: </span><span className="text-zinc-300">{ex.explanation}</span></p>
-              )}
+      {/* Test cases as examples */}
+      {problem.testCases.length > 0 && (
+        <div className="space-y-3">
+          <p className="text-sm font-semibold text-zinc-300">Examples</p>
+          {problem.testCases.map((tc, i) => (
+            <div key={i} className="rounded-lg bg-zinc-800 p-4 text-sm space-y-1">
+              <p className="text-zinc-400 font-medium text-xs uppercase tracking-wide mb-2">Example {i + 1}</p>
+              <div className="font-mono text-xs space-y-1">
+                <p><span className="text-zinc-400">Input: </span><span className="text-zinc-200">{JSON.stringify(tc.input)}</span></p>
+                <p><span className="text-zinc-400">Output: </span><span className="text-zinc-200">{JSON.stringify(tc.expected)}</span></p>
+              </div>
             </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Constraints */}
-      <div>
-        <p className="text-sm font-semibold text-zinc-300 mb-2">Constraints</p>
-        <ul className="space-y-1">
-          {problem.constraints.map((c, i) => (
-            <li key={i} className="text-xs text-zinc-400 font-mono flex items-start gap-2">
-              <span className="text-zinc-600 mt-0.5">•</span> {c}
-            </li>
           ))}
-        </ul>
-      </div>
+        </div>
+      )}
+
+      {/* Hints */}
+      {problem.hints.length > 0 && (
+        <div>
+          <p className="text-sm font-semibold text-zinc-300 mb-2">Hints</p>
+          <ul className="space-y-1">
+            {problem.hints.map((h, i) => (
+              <li key={i} className="text-xs text-zinc-400 flex items-start gap-2">
+                <span className="text-zinc-600 mt-0.5">•</span> {h}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function Home() {
-  const [activeProblem] = useState<Problem>(problems[0]);
+  const [activeProblem, setActiveProblem] = useState<Problem | null>(null);
   const [language, setLanguage] = useState<Language>("python");
-  const [code, setCode] = useState<string>(problems[0].starterCode["python"]);
+  const [code, setCode] = useState<string>("");
   const [runResult, setRunResult] = useState<{
     status: "idle" | "running" | "accepted" | "wrong_answer" | "error";
     output?: string;
   }>({ status: "idle" });
 
+  const wsRef = useRef<WebSocket | null>(null);
+  const codeRef = useRef<string>(code);
+  const codeDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => { codeRef.current = code; }, [code]);
+
+  const params = useParams();
+  const { sessionId } = params;
+
+  useEffect(() => {
+    const ws = new WebSocket(`ws://${window.location.host}/api/connect/${sessionId}`);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log("WebSocket connected");
+    };
+
+    ws.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+
+      switch (message.type) {
+        case "agent_ready": {
+          const problem: Problem = {
+            ...message.problem,
+            hints: Array.isArray(message.problem.hints) ? message.problem.hints : JSON.parse(message.problem.hints ?? "[]"),
+            testCases: Array.isArray(message.problem.testCases) ? message.problem.testCases : JSON.parse(message.problem.testCases ?? "[]"),
+          };
+          setActiveProblem(problem);
+          setCode(generateStarterCode("python", problem.title));
+          break;
+        }
+        
+        
+      }
+    };
+
+    ws.onclose = () => {
+      console.log("WebSocket disconnected");
+    };
+
+    return () => {
+      if (codeDebounceRef.current) clearTimeout(codeDebounceRef.current);
+      ws.close();
+      wsRef.current = null;
+    };
+
+  }, [sessionId]);
+
   const handleLanguageChange = useCallback((lang: Language) => {
     setLanguage(lang);
-    setCode(activeProblem.starterCode[lang]);
+    setCode(activeProblem ? generateStarterCode(lang, activeProblem.title) : "");
     setRunResult({ status: "idle" });
   }, [activeProblem]);
 
   const handleRun = async () => {
     setRunResult({ status: "running" });
     try {
-      const res = await fetch("http://localhost:8080/api/run", {
+      const res = await fetch("/api/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, language, problemId: activeProblem.id, mode: "run" }),
+        body: JSON.stringify({ code, language, problemId: activeProblem?.id, mode: "run" }),
       });
       const data = await res.json();
       setRunResult({ status: data.status, output: data.output });
     } catch {
-      setRunResult({ status: "error", output: "Could not reach backend on port 8080." });
+      setRunResult({ status: "error", output: "Could not reach backend." });
     }
   };
 
   const handleSubmit = async () => {
     setRunResult({ status: "running" });
     try {
-      const res = await fetch("http://localhost:8080/api/run", {
+      const res = await fetch("/api/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, language, problemId: activeProblem.id, mode: "submit" }),
+        body: JSON.stringify({ code, language, problemId: activeProblem?.id, mode: "submit" }),
       });
       const data = await res.json();
       setRunResult({ status: data.status, output: data.output });
     } catch {
-      setRunResult({ status: "error", output: "Could not reach backend on port 8080." });
+      setRunResult({ status: "error", output: "Could not reach backend." });
     }
   };
 
@@ -274,7 +298,7 @@ export default function Home() {
             ))}
           </select>
           <button
-            onClick={() => { setCode(activeProblem.starterCode[language]); setRunResult({ status: "idle" }); }}
+            onClick={() => { setCode(activeProblem ? generateStarterCode(language, activeProblem.title) : ""); setRunResult({ status: "idle" }); }}
             className="text-xs text-zinc-500 hover:text-zinc-300 px-2 py-1.5 transition-colors"
           >
             Reset
@@ -323,7 +347,15 @@ export default function Home() {
               height="100%"
               language={MONACO_LANG[language]}
               value={code}
-              onChange={(v) => setCode(v ?? "")}
+              onChange={(v) => {
+                const newCode = v ?? "";
+                setCode(newCode);
+                codeRef.current = newCode;
+                if (codeDebounceRef.current) clearTimeout(codeDebounceRef.current);
+                codeDebounceRef.current = setTimeout(() => {
+                  wsRef.current?.send(JSON.stringify({ type: "code", code: newCode }));
+                }, 500);
+              }}
               theme="vs-dark"
               options={{
                 fontSize: 13,
@@ -385,7 +417,7 @@ export default function Home() {
           </div>
         </div>
       </div>
-      <VoiceAgent />
+      <VoiceAgent sessionId={String(sessionId)} />
     </div>
   );
 }

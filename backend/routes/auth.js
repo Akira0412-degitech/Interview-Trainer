@@ -5,6 +5,8 @@ import { prisma } from "../lib/prisma.js";
 
 const router = Router();
 
+
+
 router.post("/signup", async (req, res) => {
   const { name, email, password } = req.body;
 
@@ -48,8 +50,9 @@ router.post("/signin", async (req, res) => {
     process.env.JWT_SECRET || "dev-secret",
     { expiresIn: "7d" }
   );
-
-  res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
+  
+  res.cookie("token", token, { httpOnly: true, secure: false });
+  res.json({ user: { id: user.id, name: user.name, email: user.email } });
 });
 
 export default router;

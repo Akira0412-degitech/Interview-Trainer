@@ -3,6 +3,12 @@ import { prisma } from "../lib/prisma.js";
 
 const router = Router();
 
+export function chooseProblem(problems, difficulty) {
+  const filtered = problems.filter((p) => p.difficulty === difficulty);
+  if (filtered.length === 0) return null;
+  return filtered[Math.floor(Math.random() * filtered.length)];
+}
+
 router.get("/", async (req, res) => {
   const { difficulty, category } = req.query;
   const problems = await prisma.problem.findMany({

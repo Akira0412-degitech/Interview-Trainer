@@ -21,9 +21,10 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const res = await fetch("http://localhost:8080/api/auth/signin", {
+      const res = await fetch("/api/auth/signin", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ email, password }),
       });
 

@@ -1,113 +1,158 @@
 "use client";
 
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import AICam from "./AICam";
 
 type VoiceStatus = "idle" | "connecting" | "connected" | "error";
 
-export function VoiceAgent() {
+// Encode an ArrayBuffer as a base64 string without hitting stack limits
+function bufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+export function VoiceAgent({ sessionId }: { sessionId: string }) {
   const [status, setStatus] = useState<VoiceStatus>("idle");
   const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [aiStream, setAiStream] = useState<MediaStream | null>(null);
-  const pcRef = useRef<RTCPeerConnection | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const dcRef = useRef<RTCDataChannel | null>(null);
+
+  const wsRef = useRef<WebSocket | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const scheduledEndRef = useRef<number>(0);
+  const streamDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
 
-  // Auto-connect when mounted on the interview page
   useEffect(() => {
     connect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => cleanup();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
   const cleanup = () => {
-    dcRef.current?.close();
-    dcRef.current = null;
+    if (workletNodeRef.current) {
+      workletNodeRef.current.port.onmessage = null;
+      workletNodeRef.current.disconnect();
+      workletNodeRef.current = null;
+    }
     micStreamRef.current?.getTracks().forEach((t) => t.stop());
     micStreamRef.current = null;
-    pcRef.current?.close();
-    pcRef.current = null;
-    if (audioRef.current) {
-      audioRef.current.srcObject = null;
-    }
+    audioCtxRef.current?.close();
+    audioCtxRef.current = null;
+    streamDestRef.current = null;
+    scheduledEndRef.current = 0;
+    wsRef.current?.close();
+    wsRef.current = null;
     setAgentSpeaking(false);
     setAiStream(null);
   };
 
+  // Decode a base64 PCM16 chunk and schedule it for seamless playback
+  const playAudioChunk = useCallback((base64Audio: string) => {
+    const ctx = audioCtxRef.current;
+    const dest = streamDestRef.current;
+    if (!ctx || !dest) return;
+
+    const binary = atob(base64Audio);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const int16 = new Int16Array(bytes.buffer);
+
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) {
+      float32[i] = int16[i] / (int16[i] < 0 ? 0x8000 : 0x7fff);
+    }
+
+    // AudioContext is at 24 kHz to match OpenAI output format
+    const buffer = ctx.createBuffer(1, float32.length, 24000);
+    buffer.copyToChannel(float32, 0);
+
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    // Also route into the stream destination so AICam can visualise it
+    source.connect(dest);
+
+    const startTime = Math.max(ctx.currentTime, scheduledEndRef.current);
+    source.start(startTime);
+    scheduledEndRef.current = startTime + buffer.duration;
+  }, []);
+
   const connect = async () => {
     setStatus("connecting");
     try {
-      // 1. Mint ephemeral key from our backend
-      const tokenRes = await fetch("http://localhost:8080/api/realtime/session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      
-      });
+      // AudioContext at 24 kHz – browser resamples mic input automatically
+      const ctx = new AudioContext({ sampleRate: 24000 });
+      audioCtxRef.current = ctx;
 
-      if (!tokenRes.ok) throw new Error("Failed to create realtime session");
-      const { client_secret } = await tokenRes.json();
+      // MediaStreamDestination lets AICam analyse the AI's audio
+      const dest = ctx.createMediaStreamDestination();
+      streamDestRef.current = dest;
+      setAiStream(dest.stream);
 
-      // 2. Create WebRTC peer connection
-      const pc = new RTCPeerConnection();
-      pcRef.current = pc;
+      // Load the AudioWorklet that converts Float32 → Int16 PCM
+      await ctx.audioWorklet.addModule("/audio-processor.js");
 
-      // 3. Wire up AI audio output
-      const audioEl = new Audio();
-      audioEl.autoplay = true;
-      audioRef.current = audioEl;
-      pc.ontrack = (e) => {
-        audioEl.srcObject = e.streams[0];
-        setAiStream(e.streams[0]);
+      const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStreamRef.current = micStream;
+
+      const micSource = ctx.createMediaStreamSource(micStream);
+      const workletNode = new AudioWorkletNode(ctx, "pcm-processor");
+      workletNodeRef.current = workletNode;
+
+      // Wire up the mic → worklet but don't send until the WS is open
+      micSource.connect(workletNode);
+
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${protocol}//${window.location.host}/api/audio/${sessionId}`);
+      wsRef.current = ws;
+
+      // Once the WS is open, forward every PCM chunk from the worklet
+      ws.onopen = () => {
+        workletNode.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          ws.send(JSON.stringify({ type: "audio_input", audio: bufferToBase64(e.data) }));
+        };
       };
 
-      // 4. Capture mic input
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      micStreamRef.current = stream;
-      stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-
-      // 5. Data channel for server events (track agent speaking state)
-      const dc = pc.createDataChannel("oai-events");
-      dcRef.current = dc;
-      dc.onmessage = (e) => {
+      ws.onmessage = (e) => {
         try {
-          const event = JSON.parse(e.data);
-          if (event.type === "response.audio.delta") setAgentSpeaking(true);
-          if (event.type === "response.audio.done") setAgentSpeaking(false);
-          if (event.type === "response.done") setAgentSpeaking(false);
+          const msg = JSON.parse(e.data as string);
+          switch (msg.type) {
+            case "agent_ready":
+              setStatus("connected");
+              break;
+            case "audio_output":
+              playAudioChunk(msg.audio as string);
+              break;
+            case "speaking_start":
+              setAgentSpeaking(true);
+              break;
+            case "speaking_end":
+              setAgentSpeaking(false);
+              break;
+          }
         } catch {
-          // non-JSON messages ignored
+          // ignore malformed messages
         }
       };
 
-      // 6. Create SDP offer and exchange with OpenAI Realtime
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      const sdpRes = await fetch(
-        "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${client_secret.value}`,
-            "Content-Type": "application/sdp",
-          },
-          body: offer.sdp,
-        },
-      );
-
-      if (!sdpRes.ok) throw new Error(`OpenAI SDP exchange failed: ${sdpRes.status}`);
-
-      const answerSdp = await sdpRes.text();
-      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
-
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
-          cleanup();
-          setStatus("idle");
-        }
+      ws.onclose = () => {
+        if (workletNodeRef.current) workletNodeRef.current.port.onmessage = null;
+        setStatus("idle");
+        setAgentSpeaking(false);
       };
 
-      setStatus("connected");
+      ws.onerror = () => {
+        cleanup();
+        setStatus("error");
+        setTimeout(() => setStatus("idle"), 3000);
+      };
     } catch (err) {
       console.error("VoiceAgent error:", err);
       cleanup();
@@ -143,48 +188,35 @@ export function VoiceAgent() {
     <>
       <AICam stream={aiStream} speaking={agentSpeaking} />
       <div className="fixed bottom-6 right-20 z-40 flex items-center gap-2">
-      <div className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-zinc-800 text-zinc-200">
-        {agentSpeaking ? (
-          <>
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
-            </span>
-            <span className="text-emerald-400">Speaking</span>
-          </>
-        ) : (
-          <>
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-400" />
-            </span>
-            <span>Listening</span>
-          </>
-        )}
+        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-zinc-800 text-zinc-200">
+          {agentSpeaking ? (
+            <>
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
+              </span>
+              <span className="text-emerald-400">Speaking</span>
+            </>
+          ) : (
+            <>
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-orange-400" />
+              </span>
+              <span>Listening</span>
+            </>
+          )}
+        </div>
+        <button
+          onClick={disconnect}
+          title="End voice session"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-red-700 hover:bg-red-600 transition-colors text-white"
+        >
+          <PhoneOffIcon className="w-3.5 h-3.5" />
+          End
+        </button>
       </div>
-      <button
-        onClick={disconnect}
-        title="End voice session"
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium bg-red-700 hover:bg-red-600 transition-colors text-white"
-      >
-        <PhoneOffIcon className="w-3.5 h-3.5" />
-        End
-      </button>
-    </div>
     </>
-  );
-}
-
-function MicIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4M9 11V7a3 3 0 016 0v4a3 3 0 01-6 0z"
-      />
-    </svg>
   );
 }
 

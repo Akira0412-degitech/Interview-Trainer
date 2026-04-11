@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-type Personality = "easy" | "mid" | "hard";
-
+type Difficulty = "easy" | "medium" | "hard";
+type Personality = "strict" | "friendly" | "neutral";
 interface Interviewer {
   id: Personality;
   name: string;
@@ -21,7 +21,7 @@ interface Interviewer {
 
 const INTERVIEWERS: Interviewer[] = [
   {
-    id: "easy",
+    id: "friendly",
     name: "Alex",
     role: "Junior Engineer",
     description: "Friendly and encouraging. Happy to give hints and guide you through the problem step by step.",
@@ -34,7 +34,7 @@ const INTERVIEWERS: Interviewer[] = [
     avatarText: "text-emerald-400",
   },
   {
-    id: "mid",
+    id: "neutral",
     name: "Jordan",
     role: "Senior Engineer",
     description: "Balanced and professional. Standard interview pace with occasional nudges when you're stuck.",
@@ -47,7 +47,7 @@ const INTERVIEWERS: Interviewer[] = [
     avatarText: "text-yellow-400",
   },
   {
-    id: "hard",
+    id: "strict",
     name: "Morgan",
     role: "Staff Engineer",
     description: "Strict and demanding. No hints. Expects optimal solutions and challenges every decision you make.",
@@ -63,11 +63,24 @@ const INTERVIEWERS: Interviewer[] = [
 
 export default function SessionPage() {
   const router = useRouter();
-  const [selected, setSelected] = useState<Personality | null>(null);
+  const [personality, setPersonality] = useState<Personality | null>(null);
+  const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
 
-  const handleStart = () => {
-    if (!selected) return;
-    router.push(`/interview?personality=${selected}`);
+  const handleStart = async () => {
+    if (!personality || !difficulty) return;
+    const response = await fetch("/api/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ personality, difficulty }),
+    });
+
+    if(!response.ok) {
+      alert("Failed to create session. Please try again.");
+      return;
+    }
+    const { sessionId } = await response.json();
+
+    router.push(`/interview/${sessionId}`);
   };
 
   return (
@@ -85,15 +98,18 @@ export default function SessionPage() {
         {INTERVIEWERS.map((iv) => (
           <button
             key={iv.id}
-            onClick={() => setSelected(iv.id)}
+            onClick={() => {
+              setPersonality(iv.id)
+              setDifficulty(iv.badge.toLowerCase() as Difficulty)
+            }}
             className={`relative flex flex-col items-center text-center rounded-2xl border bg-[#1e1e1e] p-6 gap-4 transition-all duration-200 shadow-lg cursor-pointer outline-none
-              ${selected === iv.id
+              ${personality === iv.id
                 ? `${iv.cardBorder} shadow-xl ${iv.cardGlow} scale-[1.03]`
                 : "border-zinc-700/50 hover:border-zinc-600 hover:scale-[1.01]"
               }`}
           >
             {/* Selected indicator */}
-            {selected === iv.id && (
+            {personality === iv.id && (
               <span className="absolute top-3 right-3 w-5 h-5 rounded-full bg-orange-500 flex items-center justify-center">
                 <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
@@ -128,8 +144,8 @@ export default function SessionPage() {
               {iv.traits.map((trait) => (
                 <li key={trait} className="flex items-center gap-2 text-xs text-zinc-500">
                   <span className={`w-1.5 h-1.5 rounded-full ${
-                    iv.id === "easy" ? "bg-emerald-500" :
-                    iv.id === "mid" ? "bg-yellow-500" : "bg-red-500"
+                    iv.id === "friendly" ? "bg-emerald-500" :
+                    iv.id === "neutral" ? "bg-yellow-500" : "bg-red-500"
                   }`} />
                   {trait}
                 </li>
@@ -143,12 +159,12 @@ export default function SessionPage() {
       <div className="mt-10 flex flex-col items-center gap-3">
         <button
           onClick={handleStart}
-          disabled={!selected}
+          disabled={!personality || !difficulty}
           className="px-10 py-3 rounded-xl bg-orange-500 hover:bg-orange-400 disabled:opacity-30 disabled:cursor-not-allowed text-white font-semibold text-sm transition-all duration-200 shadow-lg hover:shadow-orange-500/20 disabled:shadow-none"
         >
           Start Interview
         </button>
-        {!selected && (
+        {(!personality || !difficulty) && (
           <p className="text-zinc-600 text-xs">Select an interviewer to continue</p>
         )}
       </div>
