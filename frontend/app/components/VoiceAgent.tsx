@@ -34,6 +34,8 @@ export function VoiceAgent({ sessionId, onRequestEnd }: { sessionId: string; onR
   const ignoringAudioRef = useRef(false);
   // Deferred speaking-end timer so the icon stays lit until buffered audio finishes
   const speakingEndTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Gate: only forward mic audio after server signals it is ready to receive
+  const agentReadyRef = useRef(false);
 
   useEffect(() => {
     connect();
@@ -54,6 +56,7 @@ export function VoiceAgent({ sessionId, onRequestEnd }: { sessionId: string; onR
     }
     activeSourcesRef.current = [];
     ignoringAudioRef.current = false;
+    agentReadyRef.current = false;
     audioCtxRef.current?.close();
     audioCtxRef.current = null;
     streamDestRef.current = null;
@@ -90,6 +93,11 @@ export function VoiceAgent({ sessionId, onRequestEnd }: { sessionId: string; onR
     const ctx = audioCtxRef.current;
     const dest = streamDestRef.current;
     if (!ctx || !dest) return;
+
+    // After a page refresh the AudioContext starts suspended. Resume it as
+    // soon as the first audio chunk arrives so the AI voice plays immediately
+    // on reconnect, without waiting for mic permission to be granted.
+    if (ctx.state === "suspended") { ctx.resume(); }
 
     const binary = atob(base64Audio);
     const bytes = new Uint8Array(binary.length);
@@ -143,15 +151,19 @@ export function VoiceAgent({ sessionId, onRequestEnd }: { sessionId: string; onR
       // Kick off mic permission request in parallel — wire it up whenever it resolves
       ctx.audioWorklet.addModule("/audio-processor.js").then(() => {
         return navigator.mediaDevices.getUserMedia({ audio: true });
-      }).then((micStream) => {
+      }).then(async (micStream) => {
+        // After a page refresh, AudioContext starts suspended; resume it now
+        // that we have a user-permitted mic stream (counts as a user gesture context)
+        if (ctx.state === "suspended") await ctx.resume();
         micStreamRef.current = micStream;
         const micSource = ctx.createMediaStreamSource(micStream);
         const workletNode = new AudioWorkletNode(ctx, "pcm-processor");
         workletNodeRef.current = workletNode;
         micSource.connect(workletNode);
-        // Start forwarding mic audio if the WS is already open
+        // Only forward mic audio after agent_ready — prevents a burst of buffered
+        // audio from flooding OpenAI's VAD right as the resume response starts.
         workletNode.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-          if (ws.readyState !== WebSocket.OPEN) return;
+          if (!agentReadyRef.current || ws.readyState !== WebSocket.OPEN) return;
           ws.send(JSON.stringify({ type: "audio_input", audio: bufferToBase64(e.data) }));
         };
       }).catch((err) => {
@@ -169,6 +181,7 @@ export function VoiceAgent({ sessionId, onRequestEnd }: { sessionId: string; onR
           const msg = JSON.parse(e.data as string);
           switch (msg.type) {
             case "agent_ready":
+              agentReadyRef.current = true;
               setStatus("connected");
               break;
             case "interrupt":

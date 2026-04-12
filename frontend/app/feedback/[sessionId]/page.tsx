@@ -161,7 +161,7 @@ export default function FeedbackPage() {
           </span>
           <span className="text-zinc-700 text-xs">|</span>
           <Link
-            href="/"
+            href="/dashboard"
             className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors"
           >
             <svg
@@ -177,7 +177,7 @@ export default function FeedbackPage() {
                 d="M15 19l-7-7 7-7"
               />
             </svg>
-            Back to Problems
+            Back to Dashboard
           </Link>
         </div>
 
@@ -357,7 +357,7 @@ export default function FeedbackPage() {
           {/* ── Actions ── */}
           <div className="flex flex-wrap gap-3 pb-4">
             <Link
-              href="/"
+              href="/session"
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-orange-500 hover:bg-orange-400 transition-colors text-sm font-medium text-white"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

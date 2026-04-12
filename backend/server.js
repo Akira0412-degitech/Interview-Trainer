@@ -173,6 +173,22 @@ app.get("/api/sessions/:id", async (req, res) => {
   res.json({ ...session, transcript: parsedTranscript });
 });
 
+// Delete a session
+app.delete("/api/sessions/:id", async (req, res) => {
+  const session = await prisma.session.findUnique({
+    where: { id: Number(req.params.id) },
+  });
+
+  if (!session)
+    return res.status(404).json({ error: "Session not found" });
+  if (session.userId !== req.user.userId)
+    return res.status(403).json({ error: "Forbidden" });
+
+  await prisma.codeSnapshot.deleteMany({ where: { sessionId: Number(req.params.id) } });
+  await prisma.session.delete({ where: { id: Number(req.params.id) } });
+  res.status(204).end();
+});
+
 // All sessions for the authenticated user
 app.get("/api/users/me/sessions", async (req, res) => {
   const sessions = await prisma.session.findMany({

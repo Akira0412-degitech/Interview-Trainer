@@ -7,6 +7,10 @@ import { prisma } from "../lib/prisma.js";
 // Stores: { code, mainWs, transcript, ended }
 const sessions = new Map();
 
+// Per-session code-snapshot throttle: last DB-write timestamp
+const codeSnapshotThrottle = new Map();
+const CODE_SNAPSHOT_INTERVAL_MS = 15_000;
+
 // ── Auth helper ───────────────────────────────────────────────────────────────
 function extractToken(request) {
   const rawCookies = request.headers.cookie || "";
@@ -35,13 +39,29 @@ const PERSONA_DESCRIPTIONS = {
 };
 
 // ── System prompt ─────────────────────────────────────────────────────────────
-function buildSystemPrompt(session) {
+function buildSystemPrompt(session, priorTranscript = []) {
   const name = INTERVIEWER_NAMES[session.personality] ?? "Jordan";
   const persona = PERSONA_DESCRIPTIONS[session.personality] ?? PERSONA_DESCRIPTIONS.neutral;
 
-  return `${persona}
+  let resumeNote = "";
+  if (priorTranscript.length > 0) {
+    // Embed up to the last 40 turns in the system prompt (capped per-turn to
+    // control token usage). This is far more reliable than re-injecting via
+    // conversation.item.create, which can corrupt the session's turn state.
+    const recentTurns = priorTranscript.slice(-40);
+    const transcriptText = recentTurns
+      .map((t) => {
+        const label = t.role === "ai" ? "Interviewer" : "Candidate";
+        const content = t.content.length > 500 ? t.content.slice(0, 500) + "\u2026" : t.content;
+        return `${label}: ${content}`;
+      })
+      .join("\n");
+    resumeNote = `\n\nIMPORTANT — RESUME: This candidate has reconnected and is resuming a session already in progress. Do NOT restart with introductions or re-present the problem. Greet them back briefly (e.g. "Welcome back!") and pick up naturally from where you left off.\n\nCONVERSATION SO FAR:\n${transcriptText}`;
+  }
 
-You work as a software engineer at Meridian Technologies and are conducting a technical coding interview today.
+  return `${persona}${resumeNote}
+
+You work as a software engineer at CodePrep and are conducting a technical coding interview today.
 
 THE PROBLEM YOU ARE GIVING THE CANDIDATE:
 Title: ${session.problem.title}
@@ -51,7 +71,7 @@ Description: ${session.problem.description}
 INTERVIEW STRUCTURE — follow these phases strictly in order:
 
 PHASE 1 — INTRODUCTION (2–3 minutes)
-- Open by greeting the candidate naturally. Introduce yourself: "Hi, I'm ${name}, a software engineer here at Meridian."
+- Open by greeting the candidate naturally. Introduce yourself: "Hi, I'm ${name}, a software engineer here at CodePrep."
 - Brief warmup: ask how they are doing today.
 - Set the format: mention the session will be about 45 minutes — a coding problem, time for questions, then coding and a short discussion at the end.
 - Keep the intro short and conversational.
@@ -186,7 +206,7 @@ async function endInterview(session) {
 // The client never receives the OpenAI key or has access to the data channel.
 // Function calls (read_code, end_interview) are resolved server-side using the
 // server-stored code snapshot, making them tamper-proof.
-function handleAudioConnection(clientWs, session) {
+function handleAudioConnection(clientWs, session, priorTranscript = []) {
   const oaiWs = new WebSocket(
     "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17",
     {
@@ -197,20 +217,24 @@ function handleAudioConnection(clientWs, session) {
     }
   );
 
+  const isResume = priorTranscript.length > 0;
   let speakingStartSent = false;
-  // Buffer audio input that arrives before the OpenAI WS is open
+  // Buffer audio input that arrives before the session is confirmed ready
   const pendingAudio = [];
   let oaiReady = false;
+  // Guard so session.updated only triggers setup once
+  let sessionConfigured = false;
 
+  // Only send session.update here — do NOT send response.create or inject
+  // transcript yet. We must wait for session.updated to confirm the config
+  // (tools, instructions) is applied before OpenAI will accept those commands.
   oaiWs.on("open", () => {
-    oaiReady = true;
-
     oaiWs.send(
       JSON.stringify({
         type: "session.update",
         session: {
           voice: "alloy",
-          instructions: buildSystemPrompt(session),
+          instructions: buildSystemPrompt(session, priorTranscript),
           turn_detection: { type: "server_vad" },
           input_audio_format: "pcm16",
           output_audio_format: "pcm16",
@@ -251,14 +275,6 @@ function handleAudioConnection(clientWs, session) {
         },
       })
     );
-
-    // Flush buffered audio
-    for (const audio of pendingAudio) {
-      oaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio }));
-    }
-    pendingAudio.length = 0;
-
-    clientWs.send(JSON.stringify({ type: "agent_ready" }));
   });
 
   oaiWs.on("message", (data) => {
@@ -270,11 +286,46 @@ function handleAudioConnection(clientWs, session) {
     }
 
     switch (event.type) {
+      // ── Session confirmed ready ───────────────────────────────────────────
+      case "session.updated": {
+        if (sessionConfigured) break;
+        sessionConfigured = true;
+        oaiReady = true;
+
+        if (isResume) {
+          // Transcript context is already baked into the system prompt.
+          // Clear stale audio before asking the model to greet the user back.
+          oaiWs.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+        }
+        // Always trigger the AI to speak first — for new sessions this starts
+        // Phase 1 (greeting), for resumes it triggers the "Welcome back!" line.
+        oaiWs.send(JSON.stringify({ type: "response.create" }));
+
+        // Flush any audio that arrived before session was ready (should be
+        // empty since client gates behind agent_ready, but flush for safety)
+        for (const audio of pendingAudio) {
+          oaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio }));
+        }
+        pendingAudio.length = 0;
+
+        // Signal client only now — session is fully configured and ready
+        clientWs.send(JSON.stringify({ type: "agent_ready" }));
+        break;
+      }
+
+
+      // ── OpenAI error — log so we can diagnose session issues ─────────────
+      case "error": {
+        console.error(`[OAI][session ${session.id}] error:`, JSON.stringify(event.error));
+        break;
+      }
+
       case "input_audio_buffer.speech_started": {
-        // User started speaking — cancel any in-progress AI response to avoid
-        // unnatural response stacking (mimics real interruption behaviour)
-        oaiWs.send(JSON.stringify({ type: "response.cancel" }));
+        // User started speaking — only interrupt if the AI is currently streaming
+        // audio. Calling response.cancel with no active response returns an error
+        // from OpenAI which can disrupt the session on reconnect.
         if (speakingStartSent) {
+          oaiWs.send(JSON.stringify({ type: "response.cancel" }));
           // Tell client to immediately stop and discard buffered audio
           clientWs.send(JSON.stringify({ type: "interrupt" }));
           clientWs.send(JSON.stringify({ type: "speaking_end" }));
@@ -425,16 +476,37 @@ export function createWebSocketServer(server) {
       return ws.close();
     }
 
+    // If in-memory state is missing (e.g. server restart), reload from DB
+    let sessionData = sessions.get(session.id) || {};
+    if (!sessionData.transcript && session.transcript) {
+      try {
+        sessionData.transcript = JSON.parse(session.transcript);
+      } catch {
+        sessionData.transcript = [];
+      }
+    }
+    if (!sessionData.code) {
+      const latestSnapshot = await prisma.codeSnapshot.findFirst({
+        where: { sessionId: session.id },
+        orderBy: { capturedAt: "desc" },
+      });
+      if (latestSnapshot) sessionData.code = latestSnapshot.code;
+    }
+
     // Store main WS reference so the audio relay can send events to this client
-    const sessionData = sessions.get(session.id) || {};
     sessionData.mainWs = ws;
     sessions.set(session.id, sessionData);
+
+    const isResume = (sessionData.transcript?.length ?? 0) > 0;
 
     // Send problem data so the client can render the editor
     ws.send(
       JSON.stringify({
         type: "agent_ready",
         problem: session.problem,
+        savedCode: sessionData.code ?? null,
+        isResume,
+        startedAt: session.startedAt.toISOString(),
       })
     );
 
@@ -447,6 +519,15 @@ export function createWebSocketServer(server) {
             const userSess = sessions.get(session.id) || {};
             userSess.code = parsedMessage.code;
             sessions.set(session.id, userSess);
+            // Throttled DB persistence so code survives server restarts
+            const now = Date.now();
+            const lastSave = codeSnapshotThrottle.get(session.id) ?? 0;
+            if (now - lastSave >= CODE_SNAPSHOT_INTERVAL_MS) {
+              codeSnapshotThrottle.set(session.id, now);
+              prisma.codeSnapshot.create({
+                data: { sessionId: session.id, code: parsedMessage.code },
+              }).catch((err) => console.error("Code snapshot save failed:", err));
+            }
             break;
           }
           case "end_interview": {
@@ -469,7 +550,20 @@ export function createWebSocketServer(server) {
       ws.send(JSON.stringify({ error: "Unauthorized" }));
       return ws.close();
     }
-    handleAudioConnection(ws, session);
+
+    // Restore transcript from DB if not yet in memory (race with /api/connect or server restart)
+    let sessionData = sessions.get(session.id) || {};
+    if (!sessionData.transcript && session.transcript) {
+      try {
+        sessionData.transcript = JSON.parse(session.transcript);
+      } catch {
+        sessionData.transcript = [];
+      }
+      sessions.set(session.id, sessionData);
+    }
+
+    const priorTranscript = sessionData.transcript ?? [];
+    handleAudioConnection(ws, session, priorTranscript);
   });
 
   // ── HTTP Upgrade router ───────────────────────────────────────────────────

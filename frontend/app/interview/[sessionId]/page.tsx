@@ -300,8 +300,13 @@ export default function Home() {
             testCases: Array.isArray(message.problem.testCases) ? message.problem.testCases : JSON.parse(message.problem.testCases ?? "[]"),
           };
           setActiveProblem(problem);
-          setCode(generateStarterCode("python", problem.title));
-          // Start elapsed timer when interview begins
+          // Restore saved code if resuming, otherwise generate starter code
+          setCode(message.savedCode ?? generateStarterCode("python", problem.title));
+          // Initialize elapsed from the persisted session start time
+          const initialElapsed = message.startedAt
+            ? Math.max(0, Math.floor((Date.now() - new Date(message.startedAt).getTime()) / 1000))
+            : 0;
+          setElapsed(initialElapsed);
           timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
           break;
         }

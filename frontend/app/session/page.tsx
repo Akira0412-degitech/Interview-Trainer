@@ -39,7 +39,7 @@ const INTERVIEWERS: Interviewer[] = [
     role: "Senior Engineer",
     description: "Balanced and professional. Standard interview pace with occasional nudges when you're stuck.",
     traits: ["Occasional hints", "Asks follow-ups", "Realistic pace"],
-    badge: "Mid",
+    badge: "Medium",
     badgeColor: "text-yellow-400 bg-yellow-400/10 border-yellow-400/30",
     cardBorder: "border-yellow-500/30",
     cardGlow: "hover:shadow-yellow-500/10",
