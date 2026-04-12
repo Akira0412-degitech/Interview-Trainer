@@ -11,6 +11,7 @@ const PAGES = [
 ];
 
 export default function DevNav() {
+  return
   const pathname = usePathname();
 
   return (

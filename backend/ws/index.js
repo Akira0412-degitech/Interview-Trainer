@@ -59,7 +59,10 @@ function buildSystemPrompt(session, priorTranscript = []) {
     resumeNote = `\n\nIMPORTANT — RESUME: This candidate has reconnected and is resuming a session already in progress. Do NOT restart with introductions or re-present the problem. Greet them back briefly (e.g. "Welcome back!") and pick up naturally from where you left off.\n\nCONVERSATION SO FAR:\n${transcriptText}`;
   }
 
-  return `${persona}${resumeNote}
+  return `CRITICAL RULE — READ FIRST:
+You may ask AT MOST ONE question per spoken turn. The moment you finish asking it, YOUR TURN ENDS. Do not add any follow-up, filler, or answer. Go completely silent and wait for the candidate to respond. This applies everywhere: greetings, clarifications, coding phase, and wrap-up. Violating this rule breaks the interview.
+
+${persona}${resumeNote}
 
 You work as a software engineer at CodePrep and are conducting a technical coding interview today.
 
@@ -107,6 +110,8 @@ PHASE 5 — SOLUTION REVIEW & WRAP-UP (~8 minutes)
 IMPORTANT RULES:
 - This is a VOICE conversation — speak naturally, use contractions, avoid reading out symbols or code formatting.
 - Keep each spoken turn SHORT: 2–4 sentences max. Never monologue.
+- After asking ANY question, STOP IMMEDIATELY and wait silently for the candidate to respond. NEVER answer your own question or invent what they might say. For example: if you ask "How are you doing?", do NOT follow it with "Glad to hear that!" or any similar filler — wait for the candidate to actually answer before you speak again.
+- Ask at most ONE question per turn. After you ask it, your turn ends — say nothing more until they respond.
 - Do NOT skip ahead or compress phases — let each phase breathe naturally.
 - Maintain your personality consistently throughout.
 - Do NOT call end_interview until you have genuinely completed Phase 5 and said your goodbye.
@@ -220,6 +225,9 @@ function handleAudioConnection(clientWs, session, priorTranscript = []) {
   const isResume = priorTranscript.length > 0;
   let speakingStartSent = false;
   let hasActiveResponse = false;
+  // Detect when model talks past a question (answers its own question)
+  let currentRespText = "";
+  let seenQuestionAt = -1;
   // Buffer audio input that arrives before the session is confirmed ready
   const pendingAudio = [];
   let oaiReady = false;
@@ -322,23 +330,33 @@ function handleAudioConnection(clientWs, session, priorTranscript = []) {
       }
 
       case "input_audio_buffer.speech_started": {
-        // Cancel the active OpenAI response if one is in flight.
-        // Guard against calling cancel with no active response — that returns
-        // an error from OpenAI which can disrupt the session on reconnect.
-        if (hasActiveResponse) {
-          oaiWs.send(JSON.stringify({ type: "response.cancel" }));
-        }
-        // Interrupt client playback if audio has been sent (it may still be
-        // buffered on the client even after response.audio.done has fired).
-        if (speakingStartSent) {
-          clientWs.send(JSON.stringify({ type: "interrupt" }));
-          clientWs.send(JSON.stringify({ type: "speaking_end" }));
-          speakingStartSent = false;
-        }
+        // Interruption is disabled — user speech does not cancel AI playback.
         break;
       }
       case "response.created": {
         hasActiveResponse = true;
+        currentRespText = "";
+        seenQuestionAt = -1;
+        break;
+      }
+      // Monitor streaming transcript — cancel if model continues after asking a question
+      case "response.audio_transcript.delta": {
+        if (event.delta) {
+          currentRespText += event.delta;
+          if (seenQuestionAt === -1) {
+            const qIdx = currentRespText.indexOf("?");
+            if (qIdx !== -1) seenQuestionAt = qIdx;
+          }
+          if (seenQuestionAt !== -1) {
+            // Count non-whitespace chars after the question mark
+            const nonWhitespaceAfterQ = currentRespText.slice(seenQuestionAt + 1).replace(/\s/g, "");
+            if (nonWhitespaceAfterQ.length > 10) {
+              // Model is answering its own question — cut it off
+              oaiWs.send(JSON.stringify({ type: "response.cancel" }));
+              seenQuestionAt = -1;
+            }
+          }
+        }
         break;
       }
       case "response.audio.delta": {
@@ -446,11 +464,12 @@ function handleAudioConnection(clientWs, session, priorTranscript = []) {
     }
   });
 
-  // Forward mic audio from client to OpenAI
+  // Forward mic audio from client to OpenAI — suppressed while agent is speaking
   clientWs.on("message", (message) => {
     try {
       const msg = JSON.parse(message.toString());
       if (msg.type === "audio_input") {
+        if (speakingStartSent) return; // drop audio while agent is playing
         if (oaiReady) {
           oaiWs.send(
             JSON.stringify({ type: "input_audio_buffer.append", audio: msg.audio })

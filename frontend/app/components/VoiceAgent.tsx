@@ -184,9 +184,6 @@ export function VoiceAgent({ sessionId, onRequestEnd }: { sessionId: string; onR
               agentReadyRef.current = true;
               setStatus("connected");
               break;
-            case "interrupt":
-              interruptAudio();
-              break;
             case "audio_output":
               playAudioChunk(msg.audio as string);
               break;
