@@ -219,6 +219,7 @@ function handleAudioConnection(clientWs, session, priorTranscript = []) {
 
   const isResume = priorTranscript.length > 0;
   let speakingStartSent = false;
+  let hasActiveResponse = false;
   // Buffer audio input that arrives before the session is confirmed ready
   const pendingAudio = [];
   let oaiReady = false;
@@ -321,16 +322,23 @@ function handleAudioConnection(clientWs, session, priorTranscript = []) {
       }
 
       case "input_audio_buffer.speech_started": {
-        // User started speaking — only interrupt if the AI is currently streaming
-        // audio. Calling response.cancel with no active response returns an error
-        // from OpenAI which can disrupt the session on reconnect.
-        if (speakingStartSent) {
+        // Cancel the active OpenAI response if one is in flight.
+        // Guard against calling cancel with no active response — that returns
+        // an error from OpenAI which can disrupt the session on reconnect.
+        if (hasActiveResponse) {
           oaiWs.send(JSON.stringify({ type: "response.cancel" }));
-          // Tell client to immediately stop and discard buffered audio
+        }
+        // Interrupt client playback if audio has been sent (it may still be
+        // buffered on the client even after response.audio.done has fired).
+        if (speakingStartSent) {
           clientWs.send(JSON.stringify({ type: "interrupt" }));
           clientWs.send(JSON.stringify({ type: "speaking_end" }));
           speakingStartSent = false;
         }
+        break;
+      }
+      case "response.created": {
+        hasActiveResponse = true;
         break;
       }
       case "response.audio.delta": {
@@ -342,8 +350,13 @@ function handleAudioConnection(clientWs, session, priorTranscript = []) {
         }
         break;
       }
-      case "response.audio.done":
+      case "response.audio.done": {
+        // Do NOT reset speakingStartSent here — the client may still be playing
+        // buffered audio. We clear it only when the full response is done.
+        break;
+      }
       case "response.done": {
+        hasActiveResponse = false;
         if (speakingStartSent) {
           clientWs.send(JSON.stringify({ type: "speaking_end" }));
           speakingStartSent = false;
